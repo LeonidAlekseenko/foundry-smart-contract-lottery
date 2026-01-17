@@ -12,12 +12,19 @@ import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/V
 
 contract Raffle is VRFConsumerBaseV2Plus {
     error Raffle_SendMoreToEnterRaffle();
+    error Raffle_TransferFailed();
+    error Raffle_RafleNotOpen();
+
+    enum RaffleState {
+        OPEN,
+        CALCULATING
+    }
 
     uint256 private immutable i_entranceFee;
     // @dev The duration of the lottery in second
     uint256 private immutable i_interval;
     uint256 private s_lastTimeStamp;
-    address payable[] private s_palayers;
+    address payable[] private s_players;
 
     event RaffleEntered(address indexed player);
     //function data
@@ -27,6 +34,8 @@ contract Raffle is VRFConsumerBaseV2Plus {
     uint16 private constant REQUEST_CONFIRMATIONS = 3;
     uint32 private immutable i_callbackGasLimit;
     uint32 private constant NUM_WORDS = 1;
+    address private s_recentWinner;
+    RaffleState private s_RaffleState;
 
     constructor(
         uint256 entranceFee,
@@ -42,13 +51,17 @@ contract Raffle is VRFConsumerBaseV2Plus {
         i_keyHash = gasLane;
         i_subscriptionId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
+        s_raffleState = RaffleState.OPEN;
     }
 
     function enterRaffle() external payable {
         if (msg.value < i_entranceFee) {
             revert Raffle_SendMoreToEnterRaffle();
         }
-        s_palayers.push(payable(msg.sender));
+        if (s_raffleState != RaffleState.OPEN) {
+            revert Raffle_RafleNotOpen();
+        }
+        s_players.push(payable(msg.sender));
         emit RaffleEntered(msg.sender);
     }
 
@@ -63,14 +76,20 @@ contract Raffle is VRFConsumerBaseV2Plus {
             requestConfirmations: REQUEST_CONFIRMATIONS,
             callbackGasLimit: i_callbackGasLimit,
             numWords: NUM_WORDS,
-            extraArgs: VRFV2PlusClient._argsToBytes(
-                VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
-                )
-            });
+            extraArgs: VRFV2PlusClient._argsToBytes(VRFV2PlusClient.ExtraArgsV1({nativePayment: false}))
+        });
         uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
     }
 
-    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {}
+    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
+        uint256 indexOfWinner = randomWords[0] % s_players.length;
+        address payable recentWinner = s_players[indexOfWinner];
+        s_recentWinner = recentWinner;
+        (bool succes,) = recentWinner.call{value: address(this).balance}("");
+        if (!succes) {
+            revert Raffle_TransferFailed();
+        }
+    }
 
     /* Getters **/
 
